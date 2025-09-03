@@ -1,0 +1,17 @@
+# python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+.pytest_cache/
+
+# local data
+knowledge_pack/
+pdf/
+logs/
+tts_*.mp3
+_tmp_audio_input
+
+# env
+.env
