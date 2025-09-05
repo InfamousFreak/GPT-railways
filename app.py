@@ -36,8 +36,11 @@ embedder = SentenceTransformer("all-MiniLM-L6-v2")
 # Load FAISS index (create if missing)
 if os.path.exists(FAISS_PATH):
     index = faiss.read_index(FAISS_PATH)
-    with open(FAISS_PATH + ".pkl", "rb") as f:
-        _, id_map = pickle.load(f)   # unpack tuple (index, index_to_doc)
+    # The pkl file path should match the FAISS_PATH but with .pkl extension
+    pkl_path = os.path.splitext(FAISS_PATH)[0] + ".pkl"
+    with open(pkl_path, "rb") as f:
+        # Assuming the pickle file only contains the id_map
+        id_map = pickle.load(f)
 else:
     index = faiss.IndexFlatL2(384)  # 384-dim for MiniLM
     id_map = {}
@@ -109,19 +112,21 @@ async def query_documents(request: QueryRequest):
     for idx in I[0]:
         if idx == -1:
             continue
-        mongo_id = id_map.get(idx)
+        mongo_id = id_map.get(int(idx)) # Ensure idx is an integer for dictionary key lookup
         if mongo_id:
             doc = collection.find_one({"doc_id": mongo_id}, {"_id": 0})
             if doc:
                 results.append(doc)
 
     return {"query": request.query, "results": results}
-@app.post("/query")
-async def query_documents(request: QueryRequest):
-    return await query_documents(request)
+
+
+# THE DUPLICATE FUNCTION HAS BEEN REMOVED.
+
 
 @app.post("/ask")
-async def ask(q: QueryRequest):   # same schema as QueryRequest
+async def ask(q: QueryRequest):  # same schema as QueryRequest
+    # This now correctly calls the one and only query_documents function
     return await query_documents(q)
 
 
@@ -143,7 +148,8 @@ async def add_text_to_index(text: str = Form(...), doc_id: str = Form(...)):
 
     # Save FAISS + mapping
     faiss.write_index(index, FAISS_PATH)
-    with open(FAISS_PATH + ".pkl", "wb") as f:
+    pkl_path = os.path.splitext(FAISS_PATH)[0] + ".pkl"
+    with open(pkl_path, "wb") as f:
         pickle.dump(id_map, f)
 
     return {"message": "✅ Text added successfully", "doc_id": doc_id}
