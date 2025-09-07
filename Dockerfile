@@ -1,31 +1,39 @@
-# Use Python 3.11
-FROM python:3.11-slim
+# STAGE 1: The "Builder" Stage - For heavy installation
+FROM python:3.11-slim as builder
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies required for camelot + OpenCV + torch
+# Install all necessary system dependencies for ML and PDF processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     poppler-utils \
     ghostscript \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements.txt
-COPY requirements.txt .
+WORKDIR /app
 
-# Install Python dependencies
+# Copy requirements and install python packages
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Copy source code
+
+# STAGE 2: The "Final" Stage - For a small, clean image
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy only the essential system libraries from the builder stage
+COPY --from=builder /usr/lib /usr/lib
+COPY --from=builder /lib /lib
+
+# Copy only the installed python packages from the builder stage
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /app/requirements.txt .
+
+# Copy your application code
 COPY . .
 
-# Expose Railway's default port
+# Let Railway handle the port via the PORT environment variable
 EXPOSE 8080
 
-# Start the app with Gunicorn + Uvicorn workers (PORT handled by Railway)
-CMD gunicorn --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT app:app
+# The single, correct command to run the application
+CMD ["gunicorn", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:$PORT", "app:app"]
+
