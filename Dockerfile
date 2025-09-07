@@ -40,5 +40,5 @@ COPY . .
 EXPOSE 8080
 
 # The single, correct command to run the application
-CMD ["gunicorn", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:$PORT", "app:app"]
+CMD gunicorn --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT app:app
 
