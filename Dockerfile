@@ -5,20 +5,16 @@ FROM python:3.13-alpine as builder
 WORKDIR /app
 
 # Install build essentials that might be needed by some packages
-# --- FIX: Switched from apt-get to apk for Alpine-based builders ---
-RUN apk add --no-cache build-base
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential || apk add --no-cache build-base
 
 # Copy only the requirements file
 COPY requirements.txt .
 
-# --- CRITICAL FIX ---
-# Install PyTorch and its dependencies separately from their official source
-# This ensures we get a version compatible with the CPU-based Linux environment
-RUN pip install torch torchvision torchaudio --no-cache-dir --index-url https://download.pytorch.org/whl/cpu
-
-# Install the rest of the dependencies from the requirements file
-# Pip will see that 'torch' is already installed and skip it.
-RUN pip install --no-cache-dir -r requirements.txt
+# --- FINAL FIX ---
+# Install all dependencies in a single step.
+# This allows pip's dependency resolver to find a compatible version of everything at once,
+# while still using the official index for PyTorch CPU versions.
+RUN pip install --no-cache-dir -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
 
 
 # STAGE 2: The "Final" Stage
@@ -28,7 +24,6 @@ FROM python:3.13-alpine
 WORKDIR /app
 
 # Copy ONLY the installed packages from the builder stage.
-# This is the key step that makes our image small.
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /app/requirements.txt .
 
