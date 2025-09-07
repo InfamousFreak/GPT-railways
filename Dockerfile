@@ -1,6 +1,6 @@
 # STAGE 1: The "Builder" Stage
 # This is where we do all the heavy downloading and installation.
-FROM python:3.13-slim as builder
+FROM python:3.13-alpine as builder
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # STAGE 2: The "Final" Stage
 # This is our clean, lightweight final image.
-FROM python:3.13-slim
+FROM python:3.13-alpine
 
 WORKDIR /app
 
