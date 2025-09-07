@@ -26,6 +26,11 @@ COPY --from=builder /lib /lib
 
 # Copy only the installed python packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+
+# --- THE FIX ---
+# Copy the executable scripts (like gunicorn) that were installed by pip
+COPY --from=builder /usr/local/bin /usr/local/bin
+
 COPY --from=builder /app/requirements.txt .
 
 # Copy your application code
