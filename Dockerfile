@@ -27,5 +27,5 @@ COPY . .
 # Expose Railway's default port
 EXPOSE 8080
 
-# Run the Flask app using Gunicorn
-CMD ["gunicorn", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8080", "app:app"]
+# Start the app with Gunicorn + Uvicorn workers (PORT handled by Railway)
+CMD gunicorn --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT app:app

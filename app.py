@@ -3,6 +3,7 @@ import os
 import faiss
 import pickle
 import numpy as np
+import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
@@ -153,3 +154,7 @@ async def add_text_to_index(text: str = Form(...), doc_id: str = Form(...)):
         pickle.dump(id_map, f)
 
     return {"message": "✅ Text added successfully", "doc_id": doc_id}
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))  # Default to 8000 for local testing
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
