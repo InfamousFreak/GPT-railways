@@ -58,31 +58,33 @@ async def startup_event():
             
             # Try multiple connection strategies
             connection_configs = [
-                # Strategy 1: Bypass all SSL validation
-                {
-                    'tlsAllowInvalidCertificates': True,
-                    'tlsInsecure': True,
-                    'ssl': True,
-                    'ssl_cert_reqs': ssl.CERT_NONE,
-                    'serverSelectionTimeoutMS': 10000,
-                    'socketTimeoutMS': 10000,
-                    'connectTimeoutMS': 10000
-                },
-                # Strategy 2: Force TLS with bypassed validation
+                # Strategy 1: TLS with certificate validation bypassed
                 {
                     'tls': True,
                     'tlsAllowInvalidCertificates': True,
+                    'serverSelectionTimeoutMS': 10000,
+                    'socketTimeoutMS': 10000,
+                    'connectTimeoutMS': 10000
+                },
+                # Strategy 2: TLS with insecure mode
+                {
+                    'tls': True,
                     'tlsInsecure': True,
                     'serverSelectionTimeoutMS': 10000,
                     'socketTimeoutMS': 10000,
                     'connectTimeoutMS': 10000
                 },
-                # Strategy 3: Disable SSL entirely
+                # Strategy 3: No TLS/SSL options (let URI handle it)
                 {
-                    'ssl': False,
                     'serverSelectionTimeoutMS': 10000,
                     'socketTimeoutMS': 10000,
                     'connectTimeoutMS': 10000
+                },
+                # Strategy 4: Default connection with extended timeouts
+                {
+                    'serverSelectionTimeoutMS': 15000,
+                    'socketTimeoutMS': 15000,
+                    'connectTimeoutMS': 15000
                 }
             ]
             
