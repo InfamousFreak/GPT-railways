@@ -4,13 +4,18 @@ import faiss
 import pickle
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from dotenv import load_dotenv
-from typing import List
+from typing import List, Optional
 from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -19,33 +24,6 @@ load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DBNAME = os.getenv("MONGODB_DBNAME")
 MONGODB_COLLECTION = os.getenv("MONGODB_COLLECTION")
-
-if not all([MONGODB_URI, MONGODB_DBNAME, MONGODB_COLLECTION]):
-    raise RuntimeError("MongoDB config not set in .env")
-
-# FAISS config
-FAISS_PATH = os.getenv("FAISS_PATH", "./knowledge_pack/index_hnsw.faiss")
-
-# Connect MongoDB
-client = MongoClient(MONGODB_URI)
-db = client[MONGODB_DBNAME]
-collection = db[MONGODB_COLLECTION]
-
-# Load embedding model
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
-
-# Load FAISS index (create if missing)
-if os.path.exists(FAISS_PATH):
-    index = faiss.read_index(FAISS_PATH)
-    # The pkl file path should match the FAISS_PATH but with .pkl extension
-    pkl_path = os.path.splitext(FAISS_PATH)[0] + ".pkl"
-    with open(pkl_path, "rb") as f:
-        # Assuming the pickle file only contains the id_map
-        id_map = pickle.load(f)
-else:
-    index = faiss.IndexFlatL2(384)  # 384-dim for MiniLM
-    id_map = {}
-
 
 # FastAPI app
 app = FastAPI(title="Industry-Ready RAG API", version="2.0.0")
@@ -58,6 +36,55 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global variables for lazy loading
+client = None
+db = None
+collection = None
+embedder = None
+index = None
+id_map = {}
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize resources on startup"""
+    global client, db, collection, embedder, index, id_map
+    
+    try:
+        # MongoDB setup
+        if MONGODB_URI and MONGODB_DBNAME and MONGODB_COLLECTION:
+            logger.info("Connecting to MongoDB...")
+            client = MongoClient(MONGODB_URI)
+            db = client[MONGODB_DBNAME]
+            collection = db[MONGODB_COLLECTION]
+            logger.info("MongoDB connected successfully")
+        else:
+            logger.warning("MongoDB config not set - running without database")
+        
+        # Load embedding model
+        logger.info("Loading embedding model...")
+        embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        logger.info("Embedding model loaded successfully")
+        
+        # FAISS setup
+        FAISS_PATH = os.getenv("FAISS_PATH", "./knowledge_pack/index_hnsw.faiss")
+        
+        if os.path.exists(FAISS_PATH):
+            logger.info(f"Loading FAISS index from {FAISS_PATH}")
+            index = faiss.read_index(FAISS_PATH)
+            pkl_path = os.path.splitext(FAISS_PATH)[0] + ".pkl"
+            if os.path.exists(pkl_path):
+                with open(pkl_path, "rb") as f:
+                    id_map = pickle.load(f)
+            logger.info("FAISS index loaded successfully")
+        else:
+            logger.info("Creating new FAISS index")
+            index = faiss.IndexFlatL2(384)  # 384-dim for MiniLM
+            id_map = {}
+            
+    except Exception as e:
+        logger.error(f"Startup error: {str(e)}")
+        # Don't raise the error - let the app start but log the issue
 
 
 # ------------------- Models -------------------
@@ -73,11 +100,30 @@ async def root():
     return {"message": "✅ RAG server running with MongoDB + FAISS!"}
 
 
+@app.get("/health")
+async def health_check():
+    """Detailed health check"""
+    status = {
+        "mongodb": "connected" if collection is not None else "disconnected",
+        "embedder": "loaded" if embedder is not None else "not loaded",
+        "faiss": "loaded" if index is not None else "not loaded",
+        "faiss_size": index.ntotal if index is not None else 0
+    }
+    return {"status": "healthy", "components": status}
+
+
 @app.get("/documents")
 async def list_documents():
     """List up to 50 ingested documents"""
-    docs = collection.find({}, {"_id": 0}).limit(50)
-    return {"documents": list(docs)}
+    if collection is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        docs = collection.find({}, {"_id": 0}).limit(50)
+        return {"documents": list(docs)}
+    except Exception as e:
+        logger.error(f"Error listing documents: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve documents")
 
 
 @app.post("/upload")
@@ -87,18 +133,28 @@ async def upload_file(file: UploadFile = File(...)):
     - Saves file to ./uploads
     - Real parsing & ingestion handled by `ingest_to_mongodb.py`
     """
-    os.makedirs("./uploads", exist_ok=True)
-    file_path = os.path.join("./uploads", file.filename)
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
+    if collection is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        os.makedirs("./uploads", exist_ok=True)
+        file_path = os.path.join("./uploads", file.filename)
+        
+        content = await file.read()
+        with open(file_path, "wb") as f:
+            f.write(content)
 
-    doc_meta = {
-        "filename": file.filename,
-        "path": file_path,
-        "status": "uploaded",
-    }
-    collection.insert_one(doc_meta)
-    return {"message": f"📄 File {file.filename} uploaded successfully", "metadata": doc_meta}
+        doc_meta = {
+            "filename": file.filename,
+            "path": file_path,
+            "status": "uploaded",
+            "size": len(content)
+        }
+        collection.insert_one(doc_meta)
+        return {"message": f"📄 File {file.filename} uploaded successfully", "metadata": doc_meta}
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to upload file")
 
 
 @app.post("/query")
@@ -106,29 +162,37 @@ async def query_documents(request: QueryRequest):
     """
     Query the vector database (FAISS + MongoDB)
     """
-    query_vec = embedder.encode([request.query]).astype("float32")
-    D, I = index.search(query_vec, request.top_k)
+    if embedder is None:
+        raise HTTPException(status_code=503, detail="Embedder not available")
+    if index is None:
+        raise HTTPException(status_code=503, detail="FAISS index not available")
+    if collection is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        query_vec = embedder.encode([request.query]).astype("float32")
+        D, I = index.search(query_vec, request.top_k)
 
-    results = []
-    for idx in I[0]:
-        if idx == -1:
-            continue
-        mongo_id = id_map.get(int(idx)) # Ensure idx is an integer for dictionary key lookup
-        if mongo_id:
-            doc = collection.find_one({"doc_id": mongo_id}, {"_id": 0})
-            if doc:
-                results.append(doc)
+        results = []
+        for idx in I[0]:
+            if idx == -1:
+                continue
+            mongo_id = id_map.get(int(idx))
+            if mongo_id:
+                doc = collection.find_one({"doc_id": mongo_id}, {"_id": 0})
+                if doc:
+                    results.append(doc)
 
-    return {"query": request.query, "results": results}
-
-
-# THE DUPLICATE FUNCTION HAS BEEN REMOVED.
+        return {"query": request.query, "results": results, "total_found": len(results)}
+    except Exception as e:
+        logger.error(f"Error querying documents: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to query documents")
 
 
 @app.post("/ask")
-async def ask(q: QueryRequest):  # same schema as QueryRequest
-    # This now correctly calls the one and only query_documents function
-    return await query_documents(q)
+async def ask(request: QueryRequest):
+    """Alias for query endpoint"""
+    return await query_documents(request)
 
 
 @app.post("/add_text")
@@ -137,24 +201,38 @@ async def add_text_to_index(text: str = Form(...), doc_id: str = Form(...)):
     Add raw text to MongoDB + FAISS index.
     Useful for testing ingestion without PDF.
     """
-    # Insert into MongoDB
-    doc = {"doc_id": doc_id, "text": text}
-    collection.insert_one(doc)
+    if embedder is None:
+        raise HTTPException(status_code=503, detail="Embedder not available")
+    if index is None:
+        raise HTTPException(status_code=503, detail="FAISS index not available")
+    if collection is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    try:
+        # Insert into MongoDB
+        doc = {"doc_id": doc_id, "text": text}
+        collection.insert_one(doc)
 
-    # Embed + add to FAISS
-    vec = embedder.encode([text]).astype("float32")
-    idx = index.ntotal
-    index.add(vec)
-    id_map[idx] = doc_id
+        # Embed + add to FAISS
+        vec = embedder.encode([text]).astype("float32")
+        idx = index.ntotal
+        index.add(vec)
+        id_map[idx] = doc_id
 
-    # Save FAISS + mapping
-    faiss.write_index(index, FAISS_PATH)
-    pkl_path = os.path.splitext(FAISS_PATH)[0] + ".pkl"
-    with open(pkl_path, "wb") as f:
-        pickle.dump(id_map, f)
+        # Save FAISS + mapping
+        FAISS_PATH = os.getenv("FAISS_PATH", "./knowledge_pack/index_hnsw.faiss")
+        os.makedirs(os.path.dirname(FAISS_PATH), exist_ok=True)
+        faiss.write_index(index, FAISS_PATH)
+        pkl_path = os.path.splitext(FAISS_PATH)[0] + ".pkl"
+        with open(pkl_path, "wb") as f:
+            pickle.dump(id_map, f)
 
-    return {"message": "✅ Text added successfully", "doc_id": doc_id}
+        return {"message": "✅ Text added successfully", "doc_id": doc_id}
+    except Exception as e:
+        logger.error(f"Error adding text: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to add text")
+
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))  # Default to 8000 for local testing
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run("app:app", host="0.0.0.0", port=port)
