@@ -24,6 +24,10 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
+
+# Copy the pre-built FAISS index files into the container
+COPY knowledge_pack ./knowledge_pack
+
 # Copy the whole project
 COPY . .
 
