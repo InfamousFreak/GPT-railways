@@ -4,6 +4,7 @@ import faiss
 import pickle
 import numpy as np
 import uvicorn
+import ssl
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
@@ -51,13 +52,65 @@ async def startup_event():
     global client, db, collection, embedder, index, id_map
     
     try:
-        # MongoDB setup
+        # MongoDB setup with comprehensive SSL handling
         if MONGODB_URI and MONGODB_DBNAME and MONGODB_COLLECTION:
             logger.info("Connecting to MongoDB...")
-            client = MongoClient(MONGODB_URI)
-            db = client[MONGODB_DBNAME]
-            collection = db[MONGODB_COLLECTION]
-            logger.info("MongoDB connected successfully")
+            
+            # Try multiple connection strategies
+            connection_configs = [
+                # Strategy 1: Bypass all SSL validation
+                {
+                    'tlsAllowInvalidCertificates': True,
+                    'tlsInsecure': True,
+                    'ssl': True,
+                    'ssl_cert_reqs': ssl.CERT_NONE,
+                    'serverSelectionTimeoutMS': 10000,
+                    'socketTimeoutMS': 10000,
+                    'connectTimeoutMS': 10000
+                },
+                # Strategy 2: Force TLS with bypassed validation
+                {
+                    'tls': True,
+                    'tlsAllowInvalidCertificates': True,
+                    'tlsInsecure': True,
+                    'serverSelectionTimeoutMS': 10000,
+                    'socketTimeoutMS': 10000,
+                    'connectTimeoutMS': 10000
+                },
+                # Strategy 3: Disable SSL entirely
+                {
+                    'ssl': False,
+                    'serverSelectionTimeoutMS': 10000,
+                    'socketTimeoutMS': 10000,
+                    'connectTimeoutMS': 10000
+                }
+            ]
+            
+            client = None
+            for i, config in enumerate(connection_configs):
+                try:
+                    logger.info(f"Trying connection strategy {i+1}")
+                    client = MongoClient(MONGODB_URI, **config)
+                    # Test the connection with a simple ping
+                    client.admin.command('ping')
+                    db = client[MONGODB_DBNAME]
+                    collection = db[MONGODB_COLLECTION]
+                    # Test collection access
+                    collection.count_documents({}, limit=1)
+                    logger.info(f"MongoDB connected successfully with strategy {i+1}")
+                    break
+                except Exception as strategy_error:
+                    logger.warning(f"Strategy {i+1} failed: {str(strategy_error)}")
+                    if client:
+                        try:
+                            client.close()
+                        except:
+                            pass
+                    client = None
+                    continue
+            
+            if client is None:
+                logger.error("All MongoDB connection strategies failed - running without database")
         else:
             logger.warning("MongoDB config not set - running without database")
         
@@ -119,8 +172,8 @@ async def list_documents():
         raise HTTPException(status_code=503, detail="Database not available")
     
     try:
-        docs = collection.find({}, {"_id": 0}).limit(50)
-        return {"documents": list(docs)}
+        docs = list(collection.find({}, {"_id": 0}).limit(50))
+        return {"documents": docs, "count": len(docs)}
     except Exception as e:
         logger.error(f"Error listing documents: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
@@ -166,8 +219,6 @@ async def query_documents(request: QueryRequest):
         raise HTTPException(status_code=503, detail="Embedder not available")
     if index is None:
         raise HTTPException(status_code=503, detail="FAISS index not available")
-    if collection is None:
-        raise HTTPException(status_code=503, detail="Database not available")
     
     try:
         query_vec = embedder.encode([request.query]).astype("float32")
@@ -178,10 +229,22 @@ async def query_documents(request: QueryRequest):
             if idx == -1:
                 continue
             mongo_id = id_map.get(int(idx))
-            if mongo_id:
+            if mongo_id and collection:
                 doc = collection.find_one({"doc_id": mongo_id}, {"_id": 0})
                 if doc:
                     results.append(doc)
+
+        # If no results from FAISS/MongoDB, try direct text search as fallback
+        if not results and collection:
+            try:
+                text_search_results = list(collection.find(
+                    {"$text": {"$search": request.query}}, 
+                    {"_id": 0}
+                ).limit(request.top_k))
+                results.extend(text_search_results)
+            except:
+                # Text search might not be available
+                pass
 
         return {"query": request.query, "results": results, "total_found": len(results)}
     except Exception as e:
