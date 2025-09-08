@@ -4,7 +4,7 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies including CA certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     poppler-utils \
@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    ca-certificates \
+    curl \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements.txt first
